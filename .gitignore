@@ -1,0 +1,28 @@
+# ---- 本地配置（含 API Key，务必不要提交）----
+.env
+
+# ---- 运行时产物 ----
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# ---- 知识库待审核草稿区 ----
+kb/_inbox/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
