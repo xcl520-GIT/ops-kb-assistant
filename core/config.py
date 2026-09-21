@@ -65,13 +65,36 @@ class Config:
         self._path = path
         self._lock = threading.RLock()
         self._raw: dict[str, str] = {}
+        self._mtime: float = 0.0
         self.reload()
 
     # ---------- 读写 ----------
+    def _mtime_now(self) -> float:
+        try:
+            return self._path.stat().st_mtime
+        except OSError:
+            return 0.0
+
     def reload(self) -> None:
         with self._lock:
             self._raw = dict(DEFAULTS)
             self._raw.update(_parse_env(self._path))
+            self._mtime = self._mtime_now()
+
+    def maybe_reload(self) -> bool:
+        """外部改动过 .env 就自动重载，返回是否真的重载了。
+
+        好处：手工编辑 .env（比如换 API Key）后不必重启服务，
+        下一个请求就会带上新配置，省掉"改了没生效"这类排查。
+        """
+        m = self._mtime_now()
+        with self._lock:
+            if not m or m == self._mtime:
+                return False
+            self._raw = dict(DEFAULTS)
+            self._raw.update(_parse_env(self._path))
+            self._mtime = m
+        return True
 
     def get(self, key: str, default: str = "") -> str:
         with self._lock:
@@ -118,6 +141,7 @@ class Config:
                     out.append(f"{k}={v}")
             self._path.write_text("\n".join(out) + "\n", encoding="utf-8")
             self._raw.update(updates)
+            self._mtime = self._mtime_now()
 
     # ---------- 派生属性 ----------
     @property

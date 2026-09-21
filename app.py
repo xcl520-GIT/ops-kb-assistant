@@ -183,6 +183,15 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, msg: str, code: int = 400) -> None:
         self._json({"ok": False, "error": msg}, code)
 
+    @staticmethod
+    def _refresh_config() -> None:
+        """外部改过 .env 就热重载，免去手工重启。"""
+        try:
+            if cfg.maybe_reload():
+                log("检测到 .env 变更，配置已自动重载")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _read_json(self) -> dict:
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -203,6 +212,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- 路由 ----------
     def do_GET(self) -> None:  # noqa: N802
         self._no_delay()
+        self._refresh_config()
         try:
             self._route_get()
         except BrokenPipeError:
@@ -213,6 +223,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         self._no_delay()
+        self._refresh_config()
         try:
             self._route_post()
         except BrokenPipeError:
@@ -223,6 +234,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._no_delay()
+        self._refresh_config()
         try:
             path = urllib.parse.urlparse(self.path).path
             if path.startswith("/api/sessions/"):
@@ -556,11 +568,51 @@ def build_index_on_start() -> None:
         log("索引构建失败：\n" + traceback.format_exc())
 
 
+def probe_existing_server(host: str, port: int) -> str:
+    """探测目标端口上是否已经有服务。返回 "" / "ours" / "other"。
+
+    存在的意义：Windows 上 SO_REUSEADDR 允许两个进程同时 bind 同一端口。
+    若不先探测，第二个实例会"启动成功"，但请求被随机分流给旧实例 —— 表现
+    出来就是"明明改了配置，却像没生效"。
+    """
+    try:
+        with socket.create_connection((host, port), timeout=0.8) as sock:
+            sock.sendall(
+                f"GET /api/health HTTP/1.0\r\nHost: {host}:{port}\r\n"
+                "Connection: close\r\n\r\n".encode()
+            )
+            sock.settimeout(1.5)
+            buf = b""
+            while len(buf) < 8192:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+    except OSError:
+        return ""
+    body = buf.decode("utf-8", "replace")
+    return "ours" if ('"kb"' in body and '"chunks"' in body) else "other"
+
+
 def main() -> None:
-    cfg.ensure_dirs()
-    store.init()
     host = cfg.get("HOST") or "127.0.0.1"
     port = cfg.get_int("PORT", 8765)
+    url = f"http://{host}:{port}/"
+
+    # 先探测再绑：宁可明确失败，也不要两个实例同时占一个端口
+    existing = probe_existing_server(host, port)
+    if existing:
+        cfg.ensure_dirs()
+        if existing == "ours":
+            log(f"[!] 端口 {port} 上已有一个本助手实例在运行，本次启动中止。")
+            log(f"    直接打开 {url} 即可；要重启请先运行 stop.bat")
+            return
+        log(f"[!] 端口 {port} 已被其他程序占用，启动中止。")
+        log("    请先释放该端口，或修改 .env 里的 PORT 后重试。")
+        sys.exit(2)
+
+    cfg.ensure_dirs()
+    store.init()
 
     log("=" * 66)
     log("本地运维知识库助手 启动中…")
@@ -573,7 +625,6 @@ def main() -> None:
 
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
-    url = f"http://{host}:{port}/"
     log(f"服务已就绪 → {url}")
     log("=" * 66)
     try:
